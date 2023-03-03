@@ -20,6 +20,8 @@ for every image {
 ReportRender()
 */
 
+const NotApplicable = "N/A"
+
 // Handler interface
 var Handler interface{}
 

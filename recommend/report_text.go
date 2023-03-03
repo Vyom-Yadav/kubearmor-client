@@ -68,9 +68,15 @@ func (r TextReport) Record(ms MatchSpec, policyName string) error {
 	policyName = policyName[strings.LastIndex(policyName, "/")+1:]
 	rec = append(rec, wrapPolicyName(policyName, 35))
 	rec = append(rec, ms.Description.Tldr)
-	rec = append(rec, fmt.Sprintf("%d", ms.Spec.Severity))
-	rec = append(rec, string(ms.Spec.Action))
-	rec = append(rec, strings.Join(ms.Spec.Tags[:], "\n"))
+	if ms.KyvernoPolicySpec != nil {
+		rec = append(rec, NotApplicable)
+		rec = append(rec, ms.KyvernoPolicySpec.ValidationFailureAction)
+		rec = append(rec, strings.Join(ms.KyvernoPolicyTags[:], "\n"))
+	} else {
+		rec = append(rec, fmt.Sprintf("%d", ms.Spec.Severity))
+		rec = append(rec, string(ms.Spec.Action))
+		rec = append(rec, strings.Join(ms.Spec.Tags[:], "\n"))
+	}
 	r.table.Append(rec)
 	return nil
 }

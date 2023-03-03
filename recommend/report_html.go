@@ -148,13 +148,25 @@ func (r HTMLReport) Record(ms MatchSpec, policyName string) error {
 		Rec: []Col{
 			{Name: policyName},
 			{Name: ms.Description.Tldr},
-			{Name: fmt.Sprintf("%d", ms.Spec.Severity)},
-			{Name: string(ms.Spec.Action)},
-			{Name: strings.Join(ms.Spec.Tags[:], "\n")},
 		},
 		Policy:      string(policy),
 		Description: ms.Description.Detailed,
 		Refs:        ms.Description.Refs,
+	}
+	if ms.KyvernoPolicySpec != nil {
+		cols := []Col{
+			{Name: NotApplicable},
+			{Name: ms.KyvernoPolicySpec.ValidationFailureAction},
+			{Name: strings.Join(ms.KyvernoPolicyTags[:], "\n")},
+		}
+		reci.Rec = append(reci.Rec, cols...)
+	} else {
+		cols := []Col{
+			{Name: fmt.Sprintf("%d", ms.Spec.Severity)},
+			{Name: string(ms.Spec.Action)},
+			{Name: strings.Join(ms.Spec.Tags[:], "\n")},
+		}
+		reci.Rec = append(reci.Rec, cols...)
 	}
 	_ = r.record.Execute(r.outString, reci)
 	return nil

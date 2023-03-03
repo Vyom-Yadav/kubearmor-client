@@ -7,6 +7,9 @@ import (
 	"archive/zip"
 	"context"
 	"fmt"
+	"github.com/clarketm/json"
+	pol "github.com/kubearmor/KubeArmor/pkg/KubeArmorController/api/security.kubearmor.com/v1"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,15 +19,14 @@ import (
 	"github.com/cavaliergopher/grab/v3"
 	"github.com/google/go-github/github"
 	kg "github.com/kubearmor/KubeArmor/KubeArmor/log"
-	pol "github.com/kubearmor/KubeArmor/pkg/KubeArmorController/api/security.kubearmor.com/v1"
 	log "github.com/sirupsen/logrus"
 	"sigs.k8s.io/yaml"
 )
 
 const (
-	org   = "kubearmor"
+	org   = "Vyom-Yadav"
 	repo  = "policy-templates"
-	url   = "https://github.com/kubearmor/policy-templates/archive/refs/tags/"
+	url   = "https://github.com/Vyom-Yadav/policy-templates/archive/refs/tags/"
 	cache = ".cache/karmor/"
 )
 
@@ -83,7 +85,7 @@ func isLatest() bool {
 		// assume the current release is the latest one
 		return true
 	}
-	return (CurrentVersion == LatestVersion)
+	return CurrentVersion == LatestVersion
 }
 
 func removeData(file string) error {
@@ -197,22 +199,43 @@ func updatePolicyRules(filePath string) error {
 		ms, err := getNextRule(&idx)
 		for ; err == nil; ms, err = getNextRule(&idx) {
 			if ms.Yaml != "" {
-				newPolicyFile := pol.KubeArmorPolicy{}
+				var policy map[string]interface{}
 				newYaml, err := os.ReadFile(filepath.Clean(fmt.Sprintf("%s%s", strings.TrimSuffix(file, "metadata.yaml"), ms.Yaml)))
 				if err != nil {
 					newYaml, _ = os.ReadFile(filepath.Clean(fmt.Sprintf("%s/%s", filePath, ms.Yaml)))
 				}
-				err = yaml.Unmarshal(newYaml, &newPolicyFile)
+				err = yaml.Unmarshal(newYaml, &policy)
 				if err != nil {
 					return err
 				}
+				apiVersion := policy["apiVersion"].(string)
+				if strings.Contains(apiVersion, "kyverno") {
+					var kyvernoPolicy kyvernov1.Policy
+					err = yaml.Unmarshal(newYaml, &kyvernoPolicy)
+					if err != nil {
+						return err
+					}
+					ms.KyvernoPolicySpec = &kyvernoPolicy.Spec
+				} else if strings.Contains(apiVersion, "kubearmor") {
+					var kubeArmorPolicy pol.KubeArmorPolicy
+					err = yaml.Unmarshal(newYaml, &kubeArmorPolicy)
+					if err != nil {
+						return err
+					}
+					ms.Spec = kubeArmorPolicy.Spec
+				}
 				ms.Yaml = ""
-				ms.Spec = newPolicyFile.Spec
 			}
 			completePolicy = append(completePolicy, ms)
 		}
 	}
-	yamlFile, err = yaml.Marshal(completePolicy)
+
+	var jsonFile []byte
+	jsonFile, err = json.Marshal(completePolicy)
+	if err != nil {
+		return err
+	}
+	yamlFile, err = yaml.JSONToYAML(jsonFile)
 	if err != nil {
 		return err
 	}

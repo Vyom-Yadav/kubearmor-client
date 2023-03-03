@@ -5,6 +5,9 @@ package recommend
 
 import (
 	"fmt"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +44,7 @@ func mkPathFromTag(tag string) string {
 	return r.Replace(tag)
 }
 
-func (img *ImageInfo) createPolicy(ms MatchSpec) (pol.KubeArmorPolicy, error) {
+func (img *ImageInfo) createKubeArmorPolicy(ms MatchSpec) (pol.KubeArmorPolicy, error) {
 	policy := pol.KubeArmorPolicy{
 		Spec: pol.KubeArmorPolicySpec{
 			Severity: 1, // by default
@@ -78,6 +81,73 @@ func (img *ImageInfo) createPolicy(ms MatchSpec) (pol.KubeArmorPolicy, error) {
 	return policy, nil
 }
 
+// TODO: Add more policies (use cases)
+func (img *ImageInfo) createKyvernoPolicy(ms MatchSpec) (kyvernov1.Policy, error) {
+	switch ms.Name {
+	case "restrict-automount-sa-token":
+		return createRestrictAutomountSATokenPolicy(ms, img)
+	case "drop-unused-capabilities":
+		return createDropUnusedCapabilitiesPolicy(ms, img)
+	}
+	return kyvernov1.Policy{}, fmt.Errorf("unknown policy name: %s", ms.Name)
+}
+
+func createRestrictAutomountSATokenPolicy(ms MatchSpec, img *ImageInfo) (kyvernov1.Policy, error) {
+	policy := kyvernov1.Policy{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Policy",
+			APIVersion: "kyverno.io/v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: img.getPolicyName(ms.Name),
+			Annotations: map[string]string{
+				"policies.kyverno.io/title":      "Restrict Auto-Mount of Service Account Tokens",
+				"policies.kyverno.io/minversion": "1.6.0",
+				"policies.kyverno.io/description": "The pods matched in the policy don't access the service account " +
+					"token, so the service account token should not be mounted to the pod.",
+			},
+			Namespace: img.Namespace,
+		},
+	}
+	policySpec := ms.KyvernoPolicySpec.DeepCopy()
+	policySpec.Rules[0].MatchResources.Any[0].ResourceDescription.Selector = &metav1.LabelSelector{
+		MatchLabels: img.Labels,
+	}
+	policy.Spec = *policySpec
+	return policy, nil
+}
+
+func createDropUnusedCapabilitiesPolicy(ms MatchSpec, img *ImageInfo) (kyvernov1.Policy, error) {
+	policy := kyvernov1.Policy{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Policy",
+			APIVersion: "kyverno.io/v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: img.getPolicyName(ms.Name),
+			Annotations: map[string]string{
+				"policies.kyverno.io/title":       "Drop capabilites not used by container",
+				"policies.kyverno.io/minversion":  "1.6.0",
+				"policies.kyverno.io/description": "Capabilities that are not used by pods should be dropped.",
+			},
+			Namespace: img.Namespace,
+		},
+	}
+	policySpec := ms.KyvernoPolicySpec.DeepCopy()
+	policySpec.Rules[0].MatchResources.Any[0].ResourceDescription.Selector = &metav1.LabelSelector{
+		MatchLabels: img.Labels,
+	}
+	// TODO: Remove this hardcoded capability
+	capability := "NET_ADMIN"
+	jmesPath := ":{{ request.object.spec.[ephemeralContainers, initContainers, containers][].securityContext.capabilities.drop[] }}"
+	policySpec.Rules[0].Validation.Deny.AnyAllConditions = apiextensions.JSON{
+		Raw: []byte(fmt.Sprintf(`[{"key": ["` + capability + `"], "operator": "AnyNotIn", "value": "` + jmesPath + `"}]`)),
+	}
+	policySpec.Rules[0].Validation.Message = fmt.Sprintf("Unused capability '%s' should be dropped.", capability)
+	policy.Spec = *policySpec
+	return policy, nil
+}
+
 func (img *ImageInfo) checkPreconditions(ms MatchSpec) bool {
 	var matches []string
 	for _, preCondition := range ms.Precondition {
@@ -94,7 +164,9 @@ func matchTags(ms MatchSpec) bool {
 		return true
 	}
 	for _, t := range options.Tags {
-		if slices.Contains(ms.Spec.Tags, t) {
+		if slices.Contains(ms.Spec.Tags, t) ||
+			(slices.Contains(ms.KyvernoPolicyTags, t) &&
+				ms.KyvernoPolicySpec != nil) {
 			return true
 		}
 	}
@@ -102,7 +174,16 @@ func matchTags(ms MatchSpec) bool {
 }
 
 func (img *ImageInfo) writePolicyFile(ms MatchSpec) {
-	policy, err := img.createPolicy(ms)
+	var policy interface{}
+	var err error
+	if ms.KyvernoPolicySpec != nil {
+		// TODO: After API is implemented, make this policy based on results from API
+		policy, err = img.createKyvernoPolicy(ms)
+		policy = policy.(kyvernov1.Policy)
+	} else {
+		policy, err = img.createKubeArmorPolicy(ms)
+		policy = policy.(pol.KubeArmorPolicy)
+	}
 	if err != nil {
 		log.WithError(err).WithFields(log.Fields{
 			"image": img, "spec": ms,
